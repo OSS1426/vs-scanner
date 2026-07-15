@@ -3,65 +3,156 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>VS Barcode Scanner</title>
+<title>VS Scanner</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   * { box-sizing: border-box; }
   body {
     margin: 0; font-family: -apple-system, 'Segoe UI', Inter, sans-serif;
     background: #111111; color: #fff; min-height: 100vh;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    padding: 20px;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    padding: 16px;
   }
-  h1 {
-    font-size: 12px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase;
-    color: #f472b6; margin: 0 0 14px;
+
+  /* Header with close button */
+  .topbar { width: 100%; max-width: 360px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .topbar h1 { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #f472b6; margin: 0; }
+  .close-btn {
+    width: 34px; height: 34px; border-radius: 50%; border: none; background: #262626; color: #fff;
+    font-size: 16px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s;
   }
-  #reader {
-    width: 100%; max-width: 340px; border-radius: 20px; overflow: hidden;
-    background: #000; border: 1px solid #333;
+  .close-btn:hover { background: #db2777; }
+
+  /* Live camera stage with animated scan line */
+  .stage { position: relative; width: 100%; max-width: 360px; border-radius: 20px; overflow: hidden; background: #000; border: 1px solid #333; aspect-ratio: 1 / 1; }
+  #reader, #videoFeed { width: 100%; height: 100%; object-fit: cover; }
+  #videoFeed { display: block; }
+
+  .scan-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  .scan-frame { position: absolute; left: 8%; right: 8%; top: 20%; bottom: 20%; border: 2px solid rgba(255,255,255,0.35); border-radius: 12px; }
+  .scan-line {
+    position: absolute; left: 8%; right: 8%; height: 3px; top: 20%;
+    background: linear-gradient(90deg, transparent, #ff2d55 15%, #ff5577 50%, #ff2d55 85%, transparent);
+    box-shadow: 0 0 10px 3px rgba(255,45,85,0.8);
+    animation: scanMove 1.7s ease-in-out infinite;
   }
-  #hint { font-size: 11px; color: #999; margin-top: 12px; text-align: center; max-width: 320px; line-height: 1.5; }
-  .manual { margin-top: 22px; width: 100%; max-width: 340px; }
+  @keyframes scanMove {
+    0%   { top: 20%; opacity: 0; }
+    8%   { opacity: 1; }
+    50%  { top: 78%; opacity: 1; }
+    92%  { opacity: 1; }
+    100% { top: 20%; opacity: 0; }
+  }
+
+  #hint { font-size: 11px; color: #999; margin-top: 12px; text-align: center; max-width: 340px; line-height: 1.5; }
+  #ocrStatus { font-size: 11px; color: #4ade80; margin-top: 4px; text-align: center; min-height: 14px; font-weight: 600; }
+
+  .capture-btn {
+    width: 100%; max-width: 360px; padding: 12px; border-radius: 12px; border: 0; margin-top: 10px;
+    background: #262626; color: #fff; font-weight: 700; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer;
+  }
+  .capture-btn:hover { background: #333; }
+
+  .manual { margin-top: 18px; width: 100%; max-width: 360px; }
   .manual-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; margin-bottom: 8px; text-align: center; }
   input {
     width: 100%; padding: 13px; border-radius: 12px; border: 1px solid #333;
     background: #1a1a1a; color: #fff; font-size: 14px; margin-bottom: 8px; text-align: center;
   }
   input:focus { outline: none; border-color: #db2777; }
-  button {
+  button.primary {
     width: 100%; padding: 13px; border-radius: 12px; border: 0;
     background: #db2777; color: #fff; font-weight: 700; font-size: 11px;
     text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: background 0.15s;
   }
-  button:hover { background: #be185d; }
+  button.primary:hover { background: #be185d; }
   #status { font-size: 11px; color: #4ade80; margin-top: 10px; text-align: center; min-height: 14px; font-weight: 600; }
 </style>
 </head>
 <body>
-  <h1><span style="color:#fff;">VS</span> Barcode Scanner</h1>
-  <div id="reader"></div>
+  <div class="topbar">
+    <h1 id="titleText">VS Scanner</h1>
+    <button class="close-btn" onclick="closeWindow()" aria-label="Close" title="Close">&#10005;</button>
+  </div>
+
+  <div class="stage">
+    <div id="reader"></div>
+    <video id="videoFeed" autoplay playsinline muted style="display:none;"></video>
+    <div class="scan-overlay">
+      <div class="scan-frame"></div>
+      <div class="scan-line"></div>
+    </div>
+  </div>
+
   <p id="hint">Align the barcode within the frame</p>
+  <p id="ocrStatus"></p>
+  <button id="captureNowBtn" class="capture-btn" style="display:none;" onclick="attemptOcrCapture(true)">Capture Now</button>
 
   <div class="manual">
-    <p class="manual-label">Or enter manually</p>
-    <input type="text" id="manualInput" placeholder="SKU / Barcode" onkeypress="if(event.key==='Enter') submitManual()">
-    <button onclick="submitManual()">Use This Value</button>
+    <p class="manual-label" id="manualLabel">Or enter manually</p>
+    <input type="text" id="manualInput" placeholder="SKU / Barcode / Text" onkeypress="if(event.key==='Enter') submitManual()">
+    <button class="primary" id="useValueBtn" onclick="submitManual()">Use This Value</button>
     <p id="status"></p>
   </div>
 
 <script>
-  // Reads which input field on the opener page this scan should fill.
   const params = new URLSearchParams(window.location.search);
   const targetId = params.get('target') || '';
+  const mode = params.get('mode') === 'ocr' ? 'ocr' : 'barcode';
+  const lang = params.get('lang') || 'en';
+
+  const STRINGS = {
+    en: {
+      titleBarcode: 'Scan Barcode / SKU', titleOcr: 'Scan Label (OCR)',
+      hintBarcode: 'Align the barcode within the frame', hintOcr: 'Hold the label steady inside the frame',
+      hintNoCam: 'Camera unavailable or permission denied — please type the value below instead.',
+      manualLabel: 'Or enter manually', useValue: 'Use This Value', captureNow: 'Capture Now',
+      analyzing: 'Analyzing...', captured: 'Captured! Closing...'
+    },
+    he: {
+      titleBarcode: 'סריקת ברקוד / מק"ט', titleOcr: 'סריקת תווית (OCR)',
+      hintBarcode: 'יישר את הברקוד בתוך המסגרת', hintOcr: 'החזק את התווית יציבה בתוך המסגרת',
+      hintNoCam: 'המצלמה אינה זמינה או שההרשאה נדחתה — אנא הקלד את הערך למטה במקום.',
+      manualLabel: 'או הזן ידנית', useValue: 'השתמש בערך זה', captureNow: 'צלם עכשיו',
+      analyzing: 'מנתח...', captured: 'נלכד! סוגר...'
+    },
+    ar: {
+      titleBarcode: 'مسح الباركود / SKU', titleOcr: 'مسح الملصق (OCR)',
+      hintBarcode: 'قم بمحاذاة الباركود داخل الإطار', hintOcr: 'ثبّت الملصق داخل الإطار',
+      hintNoCam: 'الكاميرا غير متاحة أو تم رفض الإذن — يرجى كتابة القيمة أدناه بدلاً من ذلك.',
+      manualLabel: 'أو أدخل يدويًا', useValue: 'استخدام هذه القيمة', captureNow: 'التقط الآن',
+      analyzing: 'جارٍ التحليل...', captured: 'تم الالتقاط! جارٍ الإغلاق...'
+    }
+  };
+  const S = STRINGS[lang] || STRINGS.en;
+  if (lang === 'he' || lang === 'ar') document.body.dir = 'rtl';
+
+  document.getElementById('titleText').innerText = mode === 'ocr' ? S.titleOcr : S.titleBarcode;
+  document.getElementById('hint').innerText = mode === 'ocr' ? S.hintOcr : S.hintBarcode;
+  document.getElementById('manualLabel').innerText = S.manualLabel;
+  document.getElementById('useValueBtn').innerText = S.useValue;
+  document.getElementById('captureNowBtn').innerText = S.captureNow;
+
+  let closed = false;
+  let barcodeScanner = null;
+  let ocrStream = null;
+  let ocrWorker = null;
+  let ocrInterval = null;
+  let ocrBusy = false;
 
   function sendResult(value) {
+    if (closed) return;
+    closed = true;
     if (window.opener) {
       // '*' is used because the Apps Script opener's exact sandbox origin is dynamic/opaque.
       window.opener.postMessage({ source: 'vs-scanner', target: targetId, value: value }, '*');
     }
-    document.getElementById('status').innerText = 'Captured! Closing...';
-    setTimeout(() => window.close(), 500);
+    document.getElementById('status').innerText = S.captured;
+    teardown();
+    setTimeout(() => window.close(), 450);
   }
 
   function submitManual() {
@@ -69,23 +160,82 @@
     if (v) sendResult(v);
   }
 
-  let scanner = null;
-  try {
-    scanner = new Html5Qrcode("reader");
-    scanner.start(
-      { facingMode: "environment" },
-      { fps: 10, qrbox: { width: 250, height: 140 } },
-      (decodedText) => {
-        scanner.stop().catch(() => {});
-        sendResult(decodedText);
-      },
-      () => { /* per-frame scan miss - ignore, keep scanning */ }
-    ).catch(() => {
-      document.getElementById('hint').innerText = 'Camera unavailable or permission denied — please type the barcode below instead.';
-    });
-  } catch (e) {
-    document.getElementById('hint').innerText = 'Camera unavailable on this device — please type the barcode below instead.';
+  function teardown() {
+    if (ocrInterval) { clearInterval(ocrInterval); ocrInterval = null; }
+    if (ocrStream) { ocrStream.getTracks().forEach(tr => tr.stop()); ocrStream = null; }
+    if (ocrWorker) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
+    if (barcodeScanner) { barcodeScanner.stop().then(() => barcodeScanner.clear()).catch(() => {}); }
   }
+
+  function closeWindow() {
+    closed = true;
+    teardown();
+    window.close();
+  }
+
+  // --- Barcode mode: continuous live decode ---
+  function startBarcodeMode() {
+    try {
+      barcodeScanner = new Html5Qrcode("reader");
+      barcodeScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 150 } },
+        (decodedText) => sendResult(decodedText),
+        () => { /* per-frame miss - keep scanning */ }
+      ).catch(() => {
+        document.getElementById('hint').innerText = S.hintNoCam;
+      });
+    } catch (e) {
+      document.getElementById('hint').innerText = S.hintNoCam;
+    }
+  }
+
+  // --- OCR mode: live video feed + periodic frame recognition ---
+  async function startOcrMode() {
+    document.getElementById('reader').style.display = 'none';
+    const video = document.getElementById('videoFeed');
+    video.style.display = 'block';
+    document.getElementById('captureNowBtn').style.display = 'block';
+
+    try {
+      ocrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = ocrStream;
+      await video.play();
+
+      ocrWorker = await Tesseract.createWorker('eng');
+      ocrInterval = setInterval(() => attemptOcrCapture(false), 1600);
+    } catch (e) {
+      document.getElementById('hint').innerText = S.hintNoCam;
+    }
+  }
+
+  async function attemptOcrCapture(manualTrigger) {
+    if (ocrBusy || !ocrWorker || closed) return;
+    const video = document.getElementById('videoFeed');
+    if (!video.videoWidth) return;
+    ocrBusy = true;
+    document.getElementById('ocrStatus').innerText = S.analyzing;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const { data } = await ocrWorker.recognize(canvas);
+      const text = (data.text || '').replace(/\s+/g, ' ').trim();
+      const confidence = data.confidence || 0;
+      if (text.length >= 2 && (manualTrigger || confidence >= 45)) {
+        sendResult(text);
+        return;
+      }
+      document.getElementById('ocrStatus').innerText = '';
+    } catch (e) {
+      document.getElementById('ocrStatus').innerText = '';
+    }
+    ocrBusy = false;
+  }
+
+  if (mode === 'ocr') startOcrMode(); else startBarcodeMode();
+  window.addEventListener('beforeunload', teardown);
 </script>
 </body>
 </html>
