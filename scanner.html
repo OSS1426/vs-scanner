@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VS Barcode Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, 'Segoe UI', Inter, sans-serif;
+    background: #111111; color: #fff; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  h1 {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase;
+    color: #f472b6; margin: 0 0 14px;
+  }
+  #reader {
+    width: 100%; max-width: 340px; border-radius: 20px; overflow: hidden;
+    background: #000; border: 1px solid #333;
+  }
+  #hint { font-size: 11px; color: #999; margin-top: 12px; text-align: center; max-width: 320px; line-height: 1.5; }
+  .manual { margin-top: 22px; width: 100%; max-width: 340px; }
+  .manual-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; margin-bottom: 8px; text-align: center; }
+  input {
+    width: 100%; padding: 13px; border-radius: 12px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 14px; margin-bottom: 8px; text-align: center;
+  }
+  input:focus { outline: none; border-color: #db2777; }
+  button {
+    width: 100%; padding: 13px; border-radius: 12px; border: 0;
+    background: #db2777; color: #fff; font-weight: 700; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: background 0.15s;
+  }
+  button:hover { background: #be185d; }
+  #status { font-size: 11px; color: #4ade80; margin-top: 10px; text-align: center; min-height: 14px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <h1><span style="color:#fff;">VS</span> Barcode Scanner</h1>
+  <div id="reader"></div>
+  <p id="hint">Align the barcode within the frame</p>
+
+  <div class="manual">
+    <p class="manual-label">Or enter manually</p>
+    <input type="text" id="manualInput" placeholder="SKU / Barcode" onkeypress="if(event.key==='Enter') submitManual()">
+    <button onclick="submitManual()">Use This Value</button>
+    <p id="status"></p>
+  </div>
+
+<script>
+  // Reads which input field on the opener page this scan should fill.
+  const params = new URLSearchParams(window.location.search);
+  const targetId = params.get('target') || '';
+
+  function sendResult(value) {
+    if (window.opener) {
+      // '*' is used because the Apps Script opener's exact sandbox origin is dynamic/opaque.
+      window.opener.postMessage({ source: 'vs-scanner', target: targetId, value: value }, '*');
+    }
+    document.getElementById('status').innerText = 'Captured! Closing...';
+    setTimeout(() => window.close(), 500);
+  }
+
+  function submitManual() {
+    const v = document.getElementById('manualInput').value.trim();
+    if (v) sendResult(v);
+  }
+
+  let scanner = null;
+  try {
+    scanner = new Html5Qrcode("reader");
+    scanner.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 140 } },
+      (decodedText) => {
+        scanner.stop().catch(() => {});
+        sendResult(decodedText);
+      },
+      () => { /* per-frame scan miss - ignore, keep scanning */ }
+    ).catch(() => {
+      document.getElementById('hint').innerText = 'Camera unavailable or permission denied — please type the barcode below instead.';
+    });
+  } catch (e) {
+    document.getElementById('hint').innerText = 'Camera unavailable on this device — please type the barcode below instead.';
+  }
+</script>
+</body>
+</html>
