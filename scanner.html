@@ -87,6 +87,13 @@
     </div>
   </div>
 
+  <div id="biometricStage" style="display:none; flex-direction:column; align-items:center;">
+    <div style="width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:2px solid #db2777;display:flex;align-items:center;justify-content:center;margin:24px 0;">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 11c0 3-1 6-3 8"/><path d="M12 11c0-1.5 1-2 2-2s2 .5 2 2c0 4-1.5 7.5-4 10"/><path d="M12 11V9a4 4 0 0 1 8 0v3c0 1 0 2-.3 3"/><path d="M8 11V9a4 4 0 0 1 1-2.6"/><path d="M6 15c.3-1 .5-2.6.5-4"/><path d="M12 3a8 8 0 0 0-7.7 6"/><path d="M18.4 5.5A8 8 0 0 1 20 11"/></svg>
+    </div>
+    <p id="bioStatus" style="font-size:12px;color:#ccc;text-align:center;max-width:300px;line-height:1.5;">Follow your device's prompt...</p>
+  </div>
+
   <p id="hint">Align the barcode within the frame</p>
   <p id="ocrStatus"></p>
   <button id="captureNowBtn" class="capture-btn" style="display:none;" onclick="attemptOcrCapture(true)">Capture Now</button>
@@ -101,7 +108,12 @@
 <script>
   const params = new URLSearchParams(window.location.search);
   const targetId = params.get('target') || '';
-  const mode = params.get('mode') === 'ocr' ? 'ocr' : 'barcode';
+  const mode = params.get('mode') === 'ocr' ? 'ocr' : (params.get('mode') === 'biometric' ? 'biometric' : 'barcode');
+  const bioAction = params.get('action') === 'verify' ? 'verify' : 'register';
+  const bioEmail = params.get('email') || '';
+  const bioFirstName = params.get('firstName') || '';
+  const bioLastName = params.get('lastName') || '';
+  const bioCredentialId = params.get('credentialId') || '';
   const lang = params.get('lang') || 'en';
 
   const STRINGS = {
@@ -234,7 +246,75 @@
     ocrBusy = false;
   }
 
-  if (mode === 'ocr') startOcrMode(); else startBarcodeMode();
+  // --- Biometric mode: WebAuthn platform authenticator, run here because Apps Script's own
+  // sandboxed iframe blocks navigator.credentials.* via Permissions-Policy - same root cause and
+  // same fix pattern as the camera (getUserMedia) issue this page already exists to work around. ---
+  function sendBiometricResult(payload) {
+    if (closed) return;
+    closed = true;
+    if (window.opener) {
+      window.opener.postMessage(Object.assign({ source: 'vs-biometric', action: bioAction }, payload), '*');
+    }
+    setTimeout(() => window.close(), 700);
+  }
+
+  async function startBiometricRegister() {
+    if (!window.PublicKeyCredential) {
+      document.getElementById('bioStatus').innerText = 'Biometric login is not supported on this device/browser.';
+      sendBiometricResult({ success: false, message: 'Not supported' });
+      return;
+    }
+    try {
+      const challenge = new Uint8Array(32); crypto.getRandomValues(challenge);
+      const userId = new Uint8Array(16); crypto.getRandomValues(userId);
+      const cred = await navigator.credentials.create({
+        publicKey: {
+          challenge: challenge,
+          rp: { name: "VS Inventory Engine" },
+          user: { id: userId, name: bioEmail, displayName: (bioFirstName + ' ' + bioLastName).trim() || bioEmail },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+          timeout: 60000
+        }
+      });
+      const credIdB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)));
+      document.getElementById('bioStatus').innerText = 'Biometric unlock registered!';
+      sendBiometricResult({ success: true, credentialId: credIdB64 });
+    } catch (e) {
+      document.getElementById('bioStatus').innerText = 'Could not register biometric unlock on this device.';
+      sendBiometricResult({ success: false, message: (e && e.message) || 'Registration failed' });
+    }
+  }
+
+  async function startBiometricVerify() {
+    if (!window.PublicKeyCredential || !bioCredentialId) {
+      document.getElementById('bioStatus').innerText = 'Biometric login is not available.';
+      sendBiometricResult({ success: false, message: 'Not available' });
+      return;
+    }
+    try {
+      const challenge = new Uint8Array(32); crypto.getRandomValues(challenge);
+      const credId = Uint8Array.from(atob(bioCredentialId), c => c.charCodeAt(0));
+      await navigator.credentials.get({
+        publicKey: { challenge: challenge, allowCredentials: [{ id: credId, type: 'public-key' }], userVerification: 'required', timeout: 60000 }
+      });
+      document.getElementById('bioStatus').innerText = 'Verified!';
+      sendBiometricResult({ success: true });
+    } catch (e) {
+      document.getElementById('bioStatus').innerText = 'Verification failed or cancelled.';
+      sendBiometricResult({ success: false, message: (e && e.message) || 'Verification failed' });
+    }
+  }
+
+  if (mode === 'biometric') {
+    document.querySelector('.stage').style.display = 'none';
+    document.getElementById('hint').style.display = 'none';
+    document.getElementById('ocrStatus').style.display = 'none';
+    document.querySelector('.manual').style.display = 'none';
+    document.getElementById('biometricStage').style.display = 'flex';
+    document.getElementById('titleText').innerText = bioAction === 'register' ? 'Set Up Biometric Unlock' : 'Verify Biometric';
+    if (bioAction === 'register') startBiometricRegister(); else startBiometricVerify();
+  } else if (mode === 'ocr') startOcrMode(); else startBarcodeMode();
   window.addEventListener('beforeunload', teardown);
 </script>
 </body>
