@@ -221,6 +221,12 @@
     }
   }
 
+  // Focused extraction: item style codes follow "112" + exactly 5 alphanumeric characters. Searching
+  // for this specific pattern within the raw OCR text (rather than sending the whole noisy block)
+  // means a capture only completes once the actual identifier is found, ignoring surrounding label
+  // text entirely - faster to a correct result and immune to picking up the wrong substring.
+  const OCR_STYLE_REGEX = /112[A-Za-z0-9]{5}/;
+
   async function attemptOcrCapture(manualTrigger) {
     if (ocrBusy || !ocrWorker || closed) return;
     const video = document.getElementById('videoFeed');
@@ -235,7 +241,15 @@
       const { data } = await ocrWorker.recognize(canvas);
       const text = (data.text || '').replace(/\s+/g, ' ').trim();
       const confidence = data.confidence || 0;
-      if (text.length >= 2 && (manualTrigger || confidence >= 45)) {
+
+      const styleMatch = text.match(OCR_STYLE_REGEX);
+      if (styleMatch && (manualTrigger || confidence >= 45)) {
+        sendResult(styleMatch[0]);
+        return;
+      }
+      if (manualTrigger && text.length >= 2) {
+        // Manual capture with no pattern match found: fall back to the raw text rather than leaving
+        // the user stuck, in case this particular label genuinely doesn't use the "112" pattern.
         sendResult(text);
         return;
       }
