@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>VS Scanner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, 'Segoe UI', Inter, sans-serif;
+    background: #111111; color: #fff; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+    padding: 16px;
+  }
+
+  /* Header with close button */
+  .topbar { width: 100%; max-width: 360px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .topbar h1 { font-size: 12px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #f472b6; margin: 0; }
+  .close-btn {
+    width: 34px; height: 34px; border-radius: 50%; border: none; background: #262626; color: #fff;
+    font-size: 16px; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background 0.15s;
+  }
+  .close-btn:hover { background: #db2777; }
+
+  /* Live camera stage with animated scan line */
+  .stage { position: relative; width: 100%; max-width: 360px; border-radius: 20px; overflow: hidden; background: #000; border: 1px solid #333; aspect-ratio: 1 / 1; }
+  #reader, #videoFeed { width: 100%; height: 100%; object-fit: cover; }
+  #videoFeed { display: block; }
+
+  .scan-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  .scan-frame { position: absolute; left: 8%; right: 8%; top: 20%; bottom: 20%; border: 2px solid rgba(255,255,255,0.35); border-radius: 12px; }
+  .scan-line {
+    position: absolute; left: 8%; right: 8%; height: 3px; top: 20%;
+    background: linear-gradient(90deg, transparent, #ff2d55 15%, #ff5577 50%, #ff2d55 85%, transparent);
+    box-shadow: 0 0 10px 3px rgba(255,45,85,0.8);
+    animation: scanMove 1.7s ease-in-out infinite;
+  }
+  @keyframes scanMove {
+    0%   { top: 20%; opacity: 0; }
+    8%   { opacity: 1; }
+    50%  { top: 78%; opacity: 1; }
+    92%  { opacity: 1; }
+    100% { top: 20%; opacity: 0; }
+  }
+
+  /* Camera controls (flash/zoom) - top-right of the stage, above the scan overlay */
+  .cam-controls { position: absolute; top: 10px; right: 10px; z-index: 6; display: flex; flex-direction: column; gap: 6px; pointer-events: auto; }
+  .cam-btn {
+    width: 34px; height: 34px; border-radius: 50%; border: none; background: rgba(20,20,20,0.7); color: #fff;
+    font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(2px);
+  }
+  .cam-btn.active { background: #f59e0b; color: #111; }
+  .zoom-group { display: flex; flex-direction: column; background: rgba(20,20,20,0.7); border-radius: 17px; overflow: hidden; }
+  .zoom-group .cam-btn { background: transparent; border-radius: 0; }
+
+  #liveScanValue {
+    font-family: 'SF Mono', 'Courier New', monospace; font-size: 15px; font-weight: 700; letter-spacing: 0.05em;
+    color: #4ade80; text-align: center; margin-top: 10px; min-height: 20px; transition: color 0.15s;
+  }
+  #liveScanValue.invalid { color: #f87171; }
+
+  #hint { font-size: 11px; color: #999; margin-top: 6px; text-align: center; max-width: 340px; line-height: 1.5; }
+  #ocrStatus { font-size: 11px; color: #4ade80; margin-top: 4px; text-align: center; min-height: 14px; font-weight: 600; }
+
+  .capture-btn {
+    width: 100%; max-width: 360px; padding: 12px; border-radius: 12px; border: 0; margin-top: 10px;
+    background: #262626; color: #fff; font-weight: 700; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer;
+  }
+  .capture-btn:hover { background: #333; }
+
+  .manual { margin-top: 18px; width: 100%; max-width: 360px; }
+  .manual-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; margin-bottom: 8px; text-align: center; }
+  input {
+    width: 100%; padding: 13px; border-radius: 12px; border: 1px solid #333;
+    background: #1a1a1a; color: #fff; font-size: 14px; margin-bottom: 8px; text-align: center;
+  }
+  input:focus { outline: none; border-color: #db2777; }
+  button.primary {
+    width: 100%; padding: 13px; border-radius: 12px; border: 0;
+    background: #db2777; color: #fff; font-weight: 700; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em; cursor: pointer; transition: background 0.15s;
+  }
+  button.primary:hover { background: #be185d; }
+  #status { font-size: 11px; color: #4ade80; margin-top: 10px; text-align: center; min-height: 14px; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1 id="titleText">VS Scanner</h1>
+    <button class="close-btn" onclick="closeWindow()" aria-label="Close" title="Close">&#10005;</button>
+  </div>
+
+  <div class="stage">
+    <div id="reader"></div>
+    <video id="videoFeed" autoplay playsinline muted style="display:none;"></video>
+    <div class="cam-controls" id="camControls" style="display:none;">
+      <button type="button" class="cam-btn" id="torchBtn" onclick="toggleTorch()" title="Flash" aria-label="Flash">&#128161;</button>
+      <div class="zoom-group">
+        <button type="button" class="cam-btn" onclick="adjustZoom(1)" title="Zoom in" aria-label="Zoom in">+</button>
+        <button type="button" class="cam-btn" onclick="adjustZoom(-1)" title="Zoom out" aria-label="Zoom out">&minus;</button>
+      </div>
+    </div>
+    <div class="scan-overlay">
+      <div class="scan-frame"></div>
+      <div class="scan-line"></div>
+    </div>
+  </div>
+  <p id="liveScanValue"></p>
+
+  <div id="biometricStage" style="display:none; flex-direction:column; align-items:center;">
+    <div style="width:120px;height:120px;border-radius:50%;background:#1a1a1a;border:2px solid #db2777;display:flex;align-items:center;justify-content:center;margin:24px 0;">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#f472b6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 11c0 3-1 6-3 8"/><path d="M12 11c0-1.5 1-2 2-2s2 .5 2 2c0 4-1.5 7.5-4 10"/><path d="M12 11V9a4 4 0 0 1 8 0v3c0 1 0 2-.3 3"/><path d="M8 11V9a4 4 0 0 1 1-2.6"/><path d="M6 15c.3-1 .5-2.6.5-4"/><path d="M12 3a8 8 0 0 0-7.7 6"/><path d="M18.4 5.5A8 8 0 0 1 20 11"/></svg>
+    </div>
+    <p id="bioStatus" style="font-size:12px;color:#ccc;text-align:center;max-width:300px;line-height:1.5;">Follow your device's prompt...</p>
+  </div>
+
+  <p id="hint">Align the barcode within the frame</p>
+  <p id="ocrStatus"></p>
+  <button id="captureNowBtn" class="capture-btn" style="display:none;" onclick="attemptOcrCapture(true)">Capture Now</button>
+
+  <div class="manual">
+    <p class="manual-label" id="manualLabel">Or enter manually</p>
+    <input type="text" id="manualInput" placeholder="SKU / Barcode / Text" onkeypress="if(event.key==='Enter') submitManual()">
+    <button class="primary" id="useValueBtn" onclick="submitManual()">Use This Value</button>
+    <p id="status"></p>
+  </div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  const targetId = params.get('target') || '';
+  const mode = params.get('mode') === 'ocr' ? 'ocr' : (params.get('mode') === 'biometric' ? 'biometric' : 'barcode');
+  const bioAction = params.get('action') === 'verify' ? 'verify' : 'register';
+  const bioEmail = params.get('email') || '';
+  const bioFirstName = params.get('firstName') || '';
+  const bioLastName = params.get('lastName') || '';
+  const bioCredentialId = params.get('credentialId') || '';
+  const lang = params.get('lang') || 'en';
+
+  const STRINGS = {
+    en: {
+      titleBarcode: 'Scan Barcode / SKU', titleOcr: 'Scan Label (OCR)',
+      hintBarcode: 'Align the barcode within the frame', hintOcr: 'Hold the label steady inside the frame',
+      hintNoCam: 'Camera unavailable or permission denied — please type the value below instead.',
+      manualLabel: 'Or enter manually', useValue: 'Use This Value', captureNow: 'Capture Now',
+      analyzing: 'Analyzing...', captured: 'Captured! Closing...'
+    },
+    he: {
+      titleBarcode: 'סריקת ברקוד / מק"ט', titleOcr: 'סריקת תווית (OCR)',
+      hintBarcode: 'יישר את הברקוד בתוך המסגרת', hintOcr: 'החזק את התווית יציבה בתוך המסגרת',
+      hintNoCam: 'המצלמה אינה זמינה או שההרשאה נדחתה — אנא הקלד את הערך למטה במקום.',
+      manualLabel: 'או הזן ידנית', useValue: 'השתמש בערך זה', captureNow: 'צלם עכשיו',
+      analyzing: 'מנתח...', captured: 'נלכד! סוגר...'
+    },
+    ar: {
+      titleBarcode: 'مسح الباركود / SKU', titleOcr: 'مسح الملصق (OCR)',
+      hintBarcode: 'قم بمحاذاة الباركود داخل الإطار', hintOcr: 'ثبّت الملصق داخل الإطار',
+      hintNoCam: 'الكاميرا غير متاحة أو تم رفض الإذن — يرجى كتابة القيمة أدناه بدلاً من ذلك.',
+      manualLabel: 'أو أدخل يدويًا', useValue: 'استخدام هذه القيمة', captureNow: 'التقط الآن',
+      analyzing: 'جارٍ التحليل...', captured: 'تم الالتقاط! جارٍ الإغلاق...'
+    }
+  };
+  const S = STRINGS[lang] || STRINGS.en;
+  if (lang === 'he' || lang === 'ar') document.body.dir = 'rtl';
+
+  document.getElementById('titleText').innerText = mode === 'ocr' ? S.titleOcr : S.titleBarcode;
+  document.getElementById('hint').innerText = mode === 'ocr' ? S.hintOcr : S.hintBarcode;
+  document.getElementById('manualLabel').innerText = S.manualLabel;
+  document.getElementById('useValueBtn').innerText = S.useValue;
+  document.getElementById('captureNowBtn').innerText = S.captureNow;
+
+  let closed = false;
+  let barcodeScanner = null;
+  let ocrStream = null;
+  let ocrWorker = null;
+  let ocrInterval = null;
+  let ocrBusy = false;
+
+  function sendResult(value) {
+    if (closed) return;
+    closed = true;
+    if (window.opener) {
+      // '*' is used because the Apps Script opener's exact sandbox origin is dynamic/opaque.
+      window.opener.postMessage({ source: 'vs-scanner', target: targetId, value: value }, '*');
+    }
+    document.getElementById('status').innerText = S.captured;
+    teardown();
+    setTimeout(() => window.close(), 450);
+  }
+
+  function submitManual() {
+    const v = document.getElementById('manualInput').value.trim();
+    if (v) sendResult(v);
+  }
+
+  function teardown() {
+    if (ocrInterval) { clearInterval(ocrInterval); ocrInterval = null; }
+    if (ocrStream) { ocrStream.getTracks().forEach(tr => tr.stop()); ocrStream = null; }
+    if (ocrWorker) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
+    if (barcodeScanner) { barcodeScanner.stop().then(() => barcodeScanner.clear()).catch(() => {}); }
+  }
+
+  function closeWindow() {
+    closed = true;
+    teardown();
+    window.close();
+  }
+
+  // Self-contained sound effects via WebAudio - no external audio files needed, so nothing extra to
+  // host or that could 404. A short high beep for a successful scan, a lower buzz for a rejected one.
+  function playTone(frequency, duration, type) {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      oscillator.type = type || 'sine';
+      oscillator.frequency.value = frequency;
+      gainNode.gain.setValueAtTime(0.3, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + duration);
+    } catch (e) { /* audio unavailable - fail silently, never block the scan flow over a sound */ }
+  }
+  function playSuccessSound() { playTone(1200, 0.15, 'sine'); }
+  function playFailSound() { playTone(220, 0.3, 'sawtooth'); }
+
+  // Flash (torch), zoom, and autofocus - all applied as video track constraints on the running camera
+  // stream. Not every device/browser supports these, so each is wrapped defensively and the relevant
+  // control is hidden if the device reports it isn't available.
+  let torchOn = false;
+  let currentZoom = 1;
+  let zoomCapabilities = null;
+
+  function setupCameraControls() {
+    if (!barcodeScanner || typeof barcodeScanner.getRunningTrackCapabilities !== 'function') return;
+    try {
+      const caps = barcodeScanner.getRunningTrackCapabilities();
+      const controls = document.getElementById('camControls');
+      controls.style.display = 'flex';
+      document.getElementById('torchBtn').style.display = (caps && caps.torch) ? 'flex' : 'none';
+      if (caps && caps.zoom) {
+        zoomCapabilities = caps.zoom;
+        currentZoom = (caps.zoom.min !== undefined) ? caps.zoom.min : 1;
+      } else {
+        document.querySelector('.zoom-group').style.display = 'none';
+      }
+      // Auto-focus: request continuous autofocus automatically if the hardware supports it - this is
+      // meant to just happen, not a manual toggle, per "auto focus based on the device hardware".
+      if (caps && caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
+        barcodeScanner.applyVideoConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+      }
+    } catch (e) { /* capabilities not supported on this device - controls stay hidden */ }
+  }
+
+  async function toggleTorch() {
+    if (!barcodeScanner) return;
+    try {
+      torchOn = !torchOn;
+      await barcodeScanner.applyVideoConstraints({ advanced: [{ torch: torchOn }] });
+      document.getElementById('torchBtn').classList.toggle('active', torchOn);
+    } catch (e) { torchOn = !torchOn; /* revert state if the device rejected it */ }
+  }
+
+  async function adjustZoom(direction) {
+    if (!barcodeScanner || !zoomCapabilities) return;
+    try {
+      const step = zoomCapabilities.step || 0.5;
+      const min = zoomCapabilities.min !== undefined ? zoomCapabilities.min : 1;
+      const max = zoomCapabilities.max !== undefined ? zoomCapabilities.max : 3;
+      currentZoom = Math.max(min, Math.min(max, currentZoom + direction * step));
+      await barcodeScanner.applyVideoConstraints({ advanced: [{ zoom: currentZoom }] });
+    } catch (e) { /* zoom not supported - silently ignore */ }
+  }
+
+  // --- Barcode mode: continuous live decode ---
+  function startBarcodeMode() {
+    try {
+      barcodeScanner = new Html5Qrcode("reader");
+      barcodeScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 150 } },
+        (decodedText) => handleBarcodeDetected(decodedText),
+        () => { /* per-frame miss - keep scanning */ }
+      ).then(() => {
+        setupCameraControls();
+      }).catch(() => {
+        document.getElementById('hint').innerText = S.hintNoCam;
+      });
+    } catch (e) {
+      document.getElementById('hint').innerText = S.hintNoCam;
+    }
+  }
+
+  // Live value display updates on every single decode attempt (valid or not), per the requirement to
+  // keep the user tracking the process in real time - only a value that is EXACTLY 12 digits (the
+  // standard UPC-A length) is actually accepted and sent back; anything else is shown, flagged
+  // invalid, and scanning simply continues.
+  function handleBarcodeDetected(decodedText) {
+    const liveDisplay = document.getElementById('liveScanValue');
+    const isValidUpc = /^\d{12}$/.test(decodedText);
+    liveDisplay.innerText = decodedText;
+    liveDisplay.classList.toggle('invalid', !isValidUpc);
+
+    if (isValidUpc) {
+      playSuccessSound();
+      sendResult(decodedText);
+    } else {
+      playFailSound();
+    }
+  }
+
+  // --- OCR mode: live video feed + periodic frame recognition ---
+  async function startOcrMode() {
+    document.getElementById('reader').style.display = 'none';
+    const video = document.getElementById('videoFeed');
+    video.style.display = 'block';
+    document.getElementById('captureNowBtn').style.display = 'block';
+
+    try {
+      ocrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = ocrStream;
+      await video.play();
+
+      ocrWorker = await Tesseract.createWorker('eng');
+      ocrInterval = setInterval(() => attemptOcrCapture(false), 1600);
+    } catch (e) {
+      document.getElementById('hint').innerText = S.hintNoCam;
+    }
+  }
+
+  // Focused extraction: item style codes follow "112" + exactly 5 alphanumeric characters. Searching
+  // for this specific pattern within the raw OCR text (rather than sending the whole noisy block)
+  // means a capture only completes once the actual identifier is found, ignoring surrounding label
+  // text entirely - faster to a correct result and immune to picking up the wrong substring.
+  const OCR_STYLE_REGEX = /112[A-Za-z0-9]{5}/;
+
+  async function attemptOcrCapture(manualTrigger) {
+    if (ocrBusy || !ocrWorker || closed) return;
+    const video = document.getElementById('videoFeed');
+    if (!video.videoWidth) return;
+    ocrBusy = true;
+    document.getElementById('ocrStatus').innerText = S.analyzing;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      const { data } = await ocrWorker.recognize(canvas);
+      const text = (data.text || '').replace(/\s+/g, ' ').trim();
+      const confidence = data.confidence || 0;
+
+      const styleMatch = text.match(OCR_STYLE_REGEX);
+      if (styleMatch && (manualTrigger || confidence >= 45)) {
+        playSuccessSound();
+        sendResult(styleMatch[0]);
+        return;
+      }
+      if (manualTrigger && text.length >= 2) {
+        // Manual capture with no pattern match found: fall back to the raw text rather than leaving
+        // the user stuck, in case this particular label genuinely doesn't use the "112" pattern.
+        playSuccessSound();
+        sendResult(text);
+        return;
+      }
+      if (manualTrigger) playFailSound();
+      document.getElementById('ocrStatus').innerText = '';
+    } catch (e) {
+      document.getElementById('ocrStatus').innerText = '';
+    }
+    ocrBusy = false;
+  }
+
+  // --- Biometric mode: WebAuthn platform authenticator, run here because Apps Script's own
+  // sandboxed iframe blocks navigator.credentials.* via Permissions-Policy - same root cause and
+  // same fix pattern as the camera (getUserMedia) issue this page already exists to work around. ---
+  function sendBiometricResult(payload) {
+    if (closed) return;
+    closed = true;
+    if (window.opener) {
+      window.opener.postMessage(Object.assign({ source: 'vs-biometric', action: bioAction }, payload), '*');
+    }
+    setTimeout(() => window.close(), 700);
+  }
+
+  async function startBiometricRegister() {
+    if (!window.PublicKeyCredential) {
+      document.getElementById('bioStatus').innerText = 'Biometric login is not supported on this device/browser.';
+      sendBiometricResult({ success: false, message: 'Not supported' });
+      return;
+    }
+    try {
+      const challenge = new Uint8Array(32); crypto.getRandomValues(challenge);
+      const userId = new Uint8Array(16); crypto.getRandomValues(userId);
+      const cred = await navigator.credentials.create({
+        publicKey: {
+          challenge: challenge,
+          rp: { name: "VS Inventory Engine" },
+          user: { id: userId, name: bioEmail, displayName: (bioFirstName + ' ' + bioLastName).trim() || bioEmail },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+          authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+          timeout: 60000
+        }
+      });
+      const credIdB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)));
+      document.getElementById('bioStatus').innerText = 'Biometric unlock registered!';
+      sendBiometricResult({ success: true, credentialId: credIdB64 });
+    } catch (e) {
+      document.getElementById('bioStatus').innerText = 'Could not register biometric unlock on this device.';
+      sendBiometricResult({ success: false, message: (e && e.message) || 'Registration failed' });
+    }
+  }
+
+  async function startBiometricVerify() {
+    if (!window.PublicKeyCredential || !bioCredentialId) {
+      document.getElementById('bioStatus').innerText = 'Biometric login is not available.';
+      sendBiometricResult({ success: false, message: 'Not available' });
+      return;
+    }
+    try {
+      const challenge = new Uint8Array(32); crypto.getRandomValues(challenge);
+      const credId = Uint8Array.from(atob(bioCredentialId), c => c.charCodeAt(0));
+      await navigator.credentials.get({
+        publicKey: { challenge: challenge, allowCredentials: [{ id: credId, type: 'public-key' }], userVerification: 'required', timeout: 60000 }
+      });
+      document.getElementById('bioStatus').innerText = 'Verified!';
+      sendBiometricResult({ success: true });
+    } catch (e) {
+      document.getElementById('bioStatus').innerText = 'Verification failed or cancelled.';
+      sendBiometricResult({ success: false, message: (e && e.message) || 'Verification failed' });
+    }
+  }
+
+  if (mode === 'biometric') {
+    document.querySelector('.stage').style.display = 'none';
+    document.getElementById('hint').style.display = 'none';
+    document.getElementById('ocrStatus').style.display = 'none';
+    document.querySelector('.manual').style.display = 'none';
+    document.getElementById('biometricStage').style.display = 'flex';
+    document.getElementById('titleText').innerText = bioAction === 'register' ? 'Set Up Biometric Unlock' : 'Verify Biometric';
+    if (bioAction === 'register') startBiometricRegister(); else startBiometricVerify();
+  } else if (mode === 'ocr') startOcrMode(); else startBarcodeMode();
+  window.addEventListener('beforeunload', teardown);
+</script>
+</body>
+</html>
